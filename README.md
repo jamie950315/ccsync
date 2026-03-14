@@ -216,6 +216,18 @@ python ccsync.py diff push
 python ccsync.py push
 ```
 
+## Ignoring Files
+
+Create a `.ccsyncignore` file in the repo root to exclude items from syncing. Uses glob patterns, one per line:
+
+```
+# Don't sync the ccsearch skill
+skills/ccsearch/*
+
+# Don't sync CLAUDE.md
+CLAUDE.md
+```
+
 ## Requirements
 
 - Python 3.10+
