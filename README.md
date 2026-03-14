@@ -4,12 +4,12 @@ Sync your `~/.claude/CLAUDE.md` and `~/.claude/skills/` between devices using a 
 
 ## What It Syncs
 
-ccsync tracks two items from `~/.claude/`:
+ccsync tracks two items from `~/.claude/` and stores them in the `config/` directory of the repo:
 
-| Item | Type | Description |
-|------|------|-------------|
-| `CLAUDE.md` | File | Your global Claude Code instructions |
-| `skills/` | Directory | Custom slash-command skills (e.g. `/ccsearch`) |
+| Local Path | Repo Path | Description |
+|------------|-----------|-------------|
+| `~/.claude/CLAUDE.md` | `config/CLAUDE.md` | Your global Claude Code instructions |
+| `~/.claude/skills/` | `config/skills/` | Custom slash-command skills (e.g. `/ccsearch`) |
 
 ## Quick Start
 
@@ -31,7 +31,7 @@ python ccsync.py pull
 
 ### `push` — Local → Repo → Remote
 
-Copies your local `~/.claude` config into the repo, then commits and pushes to remote.
+Copies your local `~/.claude` config into the repo's `config/` directory, then commits and pushes to remote.
 
 ```bash
 python ccsync.py push                    # Interactive mode (confirm each file)
@@ -43,7 +43,7 @@ python ccsync.py push -y -m "update"     # Auto-accept with custom message
 Example output:
 
 ```
-Comparing local (~/.claude) → repo (/Users/you/ccsync)
+Comparing local (~/.claude) → repo (/Users/you/ccsync/config)
 
 Found 2 change(s):
 
@@ -58,7 +58,7 @@ Found 2 change(s):
  ### AI Assistant Guidelines
 ...
 
-Apply update to /Users/you/ccsync/CLAUDE.md? [y/N] y
+Apply update to /Users/you/ccsync/config/CLAUDE.md? [y/N] y
   ✓ update: CLAUDE.md
 
 ============================================================
@@ -71,7 +71,7 @@ Apply update to /Users/you/ccsync/CLAUDE.md? [y/N] y
 +name: ccsearch
 +...
 
-Apply create to /Users/you/ccsync/skills/ccsearch/SKILL.md? [y/N] y
+Apply create to /Users/you/ccsync/config/skills/ccsearch/SKILL.md? [y/N] y
   ✓ create: skills/ccsearch/SKILL.md
 
 Pushing to remote...
@@ -94,7 +94,7 @@ Example output:
 ```
 Fetching latest from remote...
 Already up to date.
-Comparing repo (/Users/you/ccsync) → local (~/.claude)
+Comparing repo (/Users/you/ccsync/config) → local (~/.claude)
 
 Found 1 change(s):
 
@@ -127,7 +127,7 @@ python ccsync.py diff pull               # Preview pull direction
 Example output:
 
 ```
-Diff: local (~/.claude) → repo (/Users/you/ccsync)
+Diff: local (~/.claude) → repo (/Users/you/ccsync/config)
 
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
@@ -156,17 +156,17 @@ python ccsync.py status
 Example output:
 
 ```
-Repo: /Users/you/ccsync
+Repo: /Users/you/ccsync/config
 Local: /Users/you/.claude
 
   CLAUDE.md:
     local: ✓ /Users/you/.claude/CLAUDE.md
-    repo:  ✓ /Users/you/ccsync/CLAUDE.md
+    repo:  ✓ /Users/you/ccsync/config/CLAUDE.md
     status: differs
 
   skills:
     local: ✓ /Users/you/.claude/skills
-    repo:  ✓ /Users/you/ccsync/skills
+    repo:  ✓ /Users/you/ccsync/config/skills
     status: 1 local only, 2 differ
 ```
 

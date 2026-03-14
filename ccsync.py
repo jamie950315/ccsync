@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 CLAUDE_HOME = Path.home() / ".claude"
+SYNC_DIR = "config"
 SYNC_TARGETS = {
     "CLAUDE.md": CLAUDE_HOME / "CLAUDE.md",
     "skills": CLAUDE_HOME / "skills",
@@ -161,9 +162,11 @@ def git_operations(repo: Path, message: str) -> None:
 def cmd_push(args: argparse.Namespace) -> None:
     """Push local ~/.claude config to repo."""
     repo = get_repo_root()
-    print(f"Comparing local (~/.claude) → repo ({repo})")
+    sync_dir = repo / SYNC_DIR
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Comparing local (~/.claude) → repo ({sync_dir})")
 
-    changes = build_changes(CLAUDE_HOME, repo)
+    changes = build_changes(CLAUDE_HOME, sync_dir)
     if not changes:
         print("✓ Everything is in sync. No changes needed.")
         return
@@ -181,14 +184,15 @@ def cmd_push(args: argparse.Namespace) -> None:
 def cmd_pull(args: argparse.Namespace) -> None:
     """Pull repo config to local ~/.claude."""
     repo = get_repo_root()
+    sync_dir = repo / SYNC_DIR
 
     if not args.no_fetch:
         print("Fetching latest from remote...")
         subprocess.run(["git", "pull", "--ff-only"], cwd=repo, check=True)
 
-    print(f"Comparing repo ({repo}) → local (~/.claude)")
+    print(f"Comparing repo ({sync_dir}) → local (~/.claude)")
 
-    changes = build_changes(repo, CLAUDE_HOME)
+    changes = build_changes(sync_dir, CLAUDE_HOME)
     if not changes:
         print("✓ Everything is in sync. No changes needed.")
         return
@@ -201,14 +205,15 @@ def cmd_pull(args: argparse.Namespace) -> None:
 def cmd_diff(args: argparse.Namespace) -> None:
     """Show diff between local and repo without applying changes."""
     repo = get_repo_root()
+    sync_dir = repo / SYNC_DIR
     direction = args.direction
 
     if direction == "push":
-        print(f"Diff: local (~/.claude) → repo ({repo})\n")
-        changes = build_changes(CLAUDE_HOME, repo)
+        print(f"Diff: local (~/.claude) → repo ({sync_dir})\n")
+        changes = build_changes(CLAUDE_HOME, sync_dir)
     else:
-        print(f"Diff: repo ({repo}) → local (~/.claude)\n")
-        changes = build_changes(repo, CLAUDE_HOME)
+        print(f"Diff: repo ({sync_dir}) → local (~/.claude)\n")
+        changes = build_changes(sync_dir, CLAUDE_HOME)
 
     if not changes:
         print("✓ No differences found.")
@@ -223,11 +228,12 @@ def cmd_diff(args: argparse.Namespace) -> None:
 def cmd_status(_args: argparse.Namespace) -> None:
     """Show sync status overview."""
     repo = get_repo_root()
-    print(f"Repo: {repo}")
+    sync_dir = repo / SYNC_DIR
+    print(f"Repo: {sync_dir}")
     print(f"Local: {CLAUDE_HOME}\n")
 
     for name, local_path in SYNC_TARGETS.items():
-        repo_path = repo / name
+        repo_path = sync_dir / name
         local_exists = local_path.exists()
         repo_exists = repo_path.exists()
 
