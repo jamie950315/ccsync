@@ -1,0 +1,2 @@
+# ccconfig
+Claude Code configuration
