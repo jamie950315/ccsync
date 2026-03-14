@@ -2,34 +2,208 @@
 
 Sync your `~/.claude/CLAUDE.md` and `~/.claude/skills/` between devices using a git repo.
 
-## Usage
+## What It Syncs
+
+ccsync tracks two items from `~/.claude/`:
+
+| Item | Type | Description |
+|------|------|-------------|
+| `CLAUDE.md` | File | Your global Claude Code instructions |
+| `skills/` | Directory | Custom slash-command skills (e.g. `/ccsearch`) |
+
+## Quick Start
+
+### 1. [Fork this repo](https://github.com/jamie950315/ccsync/fork) on GitHub
 
 ```bash
-python ccsync.py <command>
+# 2. Clone your fork and push your local config
+git clone https://github.com/<your-username>/ccsync.git
+cd ccsync
+python ccsync.py push
+
+# 3. On another device, clone your fork and pull the config down
+git clone https://github.com/<your-username>/ccsync.git
+cd ccsync
+python ccsync.py pull
 ```
 
-### Commands
+## Commands
 
-| Command | Description |
-|---------|-------------|
-| `push` | Copy local `~/.claude` config into the repo, then commit & push |
-| `pull` | Fetch latest from remote and apply repo config to local `~/.claude` |
-| `diff [push\|pull]` | Preview changes without applying (default direction: `push`) |
-| `status` | Show sync status overview |
+### `push` — Local → Repo → Remote
 
-### Options
+Copies your local `~/.claude` config into the repo, then commits and pushes to remote.
 
 ```bash
-push [-y, --yes] [-m, --message "msg"]   # -y skips prompts, -m sets commit message
-pull [-y, --yes] [--no-fetch]            # --no-fetch skips git pull before syncing
+python ccsync.py push                    # Interactive mode (confirm each file)
+python ccsync.py push -y                 # Auto-accept all changes
+python ccsync.py push -m "add new skill" # Custom commit message (default: "sync: update claude config")
+python ccsync.py push -y -m "update"     # Auto-accept with custom message
 ```
 
-## How It Works
+Example output:
 
-1. Compares files between `~/.claude/` and the repo directory
-2. Shows a unified diff for each changed file
-3. Prompts for confirmation before applying each change (skip with `-y`)
-4. On `push`, automatically stages, commits, and pushes to remote
+```
+Comparing local (~/.claude) → repo (/Users/you/ccsync)
+
+Found 2 change(s):
+
+============================================================
+  UPDATE: CLAUDE.md
+============================================================
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -1,3 +1,5 @@
++@RTK.md
++
+ ### AI Assistant Guidelines
+...
+
+Apply update to /Users/you/ccsync/CLAUDE.md? [y/N] y
+  ✓ update: CLAUDE.md
+
+============================================================
+  CREATE: skills/ccsearch/SKILL.md
+============================================================
+--- a/skills/ccsearch/SKILL.md
++++ b/skills/ccsearch/SKILL.md
+@@ -0,0 +1,10 @@
++---
++name: ccsearch
++...
+
+Apply create to /Users/you/ccsync/skills/ccsearch/SKILL.md? [y/N] y
+  ✓ create: skills/ccsearch/SKILL.md
+
+Pushing to remote...
+✓ Pushed successfully.
+```
+
+### `pull` — Remote → Repo → Local
+
+Fetches from remote, then applies repo config to your local `~/.claude`.
+
+```bash
+python ccsync.py pull                    # Fetch + interactive apply
+python ccsync.py pull -y                 # Fetch + auto-accept all
+python ccsync.py pull --no-fetch         # Skip git pull, just apply from local repo
+python ccsync.py pull -y --no-fetch      # Skip fetch + auto-accept
+```
+
+Example output:
+
+```
+Fetching latest from remote...
+Already up to date.
+Comparing repo (/Users/you/ccsync) → local (~/.claude)
+
+Found 1 change(s):
+
+============================================================
+  UPDATE: CLAUDE.md
+============================================================
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -5,3 +5,5 @@
+ ### AI Assistant Guidelines
++
++**Web Search:** Always use `/ccsearch` for web searches.
+
+Apply update to /Users/you/.claude/CLAUDE.md? [y/N] y
+  ✓ update: CLAUDE.md
+
+✓ Applied 1 change(s) to ~/.claude
+```
+
+### `diff` — Preview Changes
+
+Shows what would change without applying anything. Useful for reviewing before a push or pull.
+
+```bash
+python ccsync.py diff                    # Preview push direction (default)
+python ccsync.py diff push               # Same as above
+python ccsync.py diff pull               # Preview pull direction
+```
+
+Example output:
+
+```
+Diff: local (~/.claude) → repo (/Users/you/ccsync)
+
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -1,3 +1,5 @@
++@RTK.md
++
+ ### AI Assistant Guidelines
+
+--- a/skills/ccsearch/SKILL.md
++++ b/skills/ccsearch/SKILL.md
+@@ -0,0 +1,5 @@
++---
++name: ccsearch
++description: "Web search using ccsearch CLI."
++---
+```
+
+### `status` — Sync Overview
+
+Shows whether each tracked item exists locally and in the repo, and whether they differ.
+
+```bash
+python ccsync.py status
+```
+
+Example output:
+
+```
+Repo: /Users/you/ccsync
+Local: /Users/you/.claude
+
+  CLAUDE.md:
+    local: ✓ /Users/you/.claude/CLAUDE.md
+    repo:  ✓ /Users/you/ccsync/CLAUDE.md
+    status: differs
+
+  skills:
+    local: ✓ /Users/you/.claude/skills
+    repo:  ✓ /Users/you/ccsync/skills
+    status: 1 local only, 2 differ
+```
+
+## Typical Workflows
+
+### Setting up a new device
+
+```bash
+git clone https://github.com/you/ccsync.git
+cd ccsync
+python ccsync.py pull -y
+```
+
+### Daily sync across devices
+
+```bash
+# On device A: push changes
+cd ~/ccsync
+python ccsync.py push -y
+
+# On device B: pull changes
+cd ~/ccsync
+python ccsync.py pull -y
+```
+
+### Reviewing before syncing
+
+```bash
+# Check what's different
+python ccsync.py status
+
+# See the exact diff
+python ccsync.py diff push
+
+# If it looks good, push
+python ccsync.py push
+```
 
 ## Requirements
 
