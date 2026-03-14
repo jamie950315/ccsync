@@ -25,7 +25,7 @@ No dependencies beyond the Python standard library. No build step, no tests, no 
 
 Single module (`ccsync.py`, ~300 lines). Key flow:
 
-- `SYNC_DIR = "config"` — synced files are stored under `config/` in the repo (not the repo root) to avoid conflicts with the project's own `CLAUDE.md`
+- `SYNC_DIR = "config"` — synced files are stored under `config/` in the repo (not the repo root) to avoid conflicts with the project's own `CLAUDE.md`. This directory is encrypted with git-crypt (see `.gitattributes`)
 - `SYNC_TARGETS` dict defines what to sync: `CLAUDE.md` (file) and `skills/` (directory)
 - `build_changes(src, dst)` compares source → destination, returns list of change dicts with unified diffs
 - `apply_changes()` iterates changes, shows diffs with ANSI colors, prompts for confirmation (unless `-y`)

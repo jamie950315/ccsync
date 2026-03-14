@@ -11,22 +11,29 @@ ccsync tracks two items from `~/.claude/` and stores them in the `config/` direc
 | `~/.claude/CLAUDE.md` | `config/CLAUDE.md` | Your global Claude Code instructions |
 | `~/.claude/skills/` | `config/skills/` | Custom slash-command skills (e.g. `/ccsearch`) |
 
+The `config/` directory is encrypted with [git-crypt](https://github.com/AGWA/git-crypt), so your personal config stays private even in a public repo. Others who fork will see encrypted content and can simply replace it with their own.
+
 ## Quick Start
 
 ### 1. [Fork this repo](https://github.com/jamie950315/ccsync/fork) on GitHub
 
 ```bash
-# 2. Clone your fork and clear the existing config
+# 2. Clone your fork and clear the encrypted config
 git clone https://github.com/<your-username>/ccsync.git
 cd ccsync
 rm -rf config/*
 
-# 3. Push your own local config
+# 3. (Optional) Set up git-crypt to encrypt your own config
+brew install git-crypt   # or apt-get install git-crypt
+git-crypt init
+
+# 4. Push your own local config
 python ccsync.py push
 
-# 4. On another device, clone your fork and pull the config down
+# 5. On another device, clone your fork and pull the config down
 git clone https://github.com/<your-username>/ccsync.git
 cd ccsync
+git-crypt unlock /path/to/your.key   # if using git-crypt
 python ccsync.py pull
 ```
 
@@ -178,8 +185,9 @@ Local: /Users/you/.claude
 ### Setting up a new device
 
 ```bash
-git clone https://github.com/you/ccsync.git
+git clone https://github.com/<your-username>/ccsync.git
 cd ccsync
+git-crypt unlock /path/to/your.key   # if using git-crypt
 python ccsync.py pull -y
 ```
 
@@ -210,4 +218,5 @@ python ccsync.py push
 
 ## Requirements
 
-Python 3.10+ (no external dependencies)
+- Python 3.10+
+- [git-crypt](https://github.com/AGWA/git-crypt) (optional, for encrypting `config/`)
