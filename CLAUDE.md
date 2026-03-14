@@ -31,3 +31,4 @@ Single module (`ccsync.py`, ~300 lines). Key flow:
 - `apply_changes()` iterates changes, shows diffs with ANSI colors, prompts for confirmation (unless `-y`)
 - `git_operations()` stages, commits, and pushes after a `push` command
 - `collect_files()` recursively walks directories, filtering via `IGNORE_PATTERNS`
+- `.ccsyncignore` in repo root — glob patterns to exclude specific files/skills from syncing (e.g. `skills/ccsearch/*`)

@@ -3,6 +3,7 @@
 
 import argparse
 import difflib
+import fnmatch
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,6 +23,27 @@ def get_repo_root() -> Path:
         capture_output=True, text=True, check=True,
     )
     return Path(result.stdout.strip())
+
+
+def load_syncignore(repo: Path) -> list[str]:
+    """Load ignore patterns from .ccsyncignore in repo root."""
+    ignorefile = repo / ".ccsyncignore"
+    if not ignorefile.exists():
+        return []
+    patterns = []
+    for line in ignorefile.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            patterns.append(line)
+    return patterns
+
+
+def is_syncignored(name: str, patterns: list[str]) -> bool:
+    """Check if a sync target name matches any .ccsyncignore pattern."""
+    for pattern in patterns:
+        if fnmatch.fnmatch(name, pattern):
+            return True
+    return False
 
 
 def should_ignore(path: Path) -> bool:
@@ -75,10 +97,13 @@ def confirm(prompt: str) -> bool:
     return answer in ("y", "yes")
 
 
-def build_changes(src_base: Path, dst_base: Path) -> list[dict]:
+def build_changes(src_base: Path, dst_base: Path, syncignore: list[str] | None = None) -> list[dict]:
     """Compare source to destination and return a list of file changes."""
+    patterns = syncignore or []
     changes = []
     for name in SYNC_TARGETS:
+        if is_syncignored(name, patterns):
+            continue
         src, dst = src_base / name, dst_base / name
         if src.is_file():
             sc, dc = read_text_safe(src), read_text_safe(dst)
@@ -92,6 +117,8 @@ def build_changes(src_base: Path, dst_base: Path) -> list[dict]:
             for rel in sorted(set(src_files) | set(dst_files)):
                 sf, df = src / rel, dst / rel
                 label = f"{name}/{rel}"
+                if is_syncignored(label, patterns):
+                    continue
                 sc, dc = read_text_safe(sf), read_text_safe(df)
                 if sc is not None and dc is None:
                     changes.append({"name": label, "src": sf, "dst": df, "action": "create",
@@ -164,9 +191,10 @@ def cmd_push(args: argparse.Namespace) -> None:
     repo = get_repo_root()
     sync_dir = repo / SYNC_DIR
     sync_dir.mkdir(parents=True, exist_ok=True)
+    syncignore = load_syncignore(repo)
     print(f"Comparing local (~/.claude) → repo ({sync_dir})")
 
-    changes = build_changes(CLAUDE_HOME, sync_dir)
+    changes = build_changes(CLAUDE_HOME, sync_dir, syncignore)
     if not changes:
         print("✓ Everything is in sync. No changes needed.")
         return
@@ -185,6 +213,7 @@ def cmd_pull(args: argparse.Namespace) -> None:
     """Pull repo config to local ~/.claude."""
     repo = get_repo_root()
     sync_dir = repo / SYNC_DIR
+    syncignore = load_syncignore(repo)
 
     if not args.no_fetch:
         print("Fetching latest from remote...")
@@ -192,7 +221,7 @@ def cmd_pull(args: argparse.Namespace) -> None:
 
     print(f"Comparing repo ({sync_dir}) → local (~/.claude)")
 
-    changes = build_changes(sync_dir, CLAUDE_HOME)
+    changes = build_changes(sync_dir, CLAUDE_HOME, syncignore)
     if not changes:
         print("✓ Everything is in sync. No changes needed.")
         return
@@ -206,14 +235,15 @@ def cmd_diff(args: argparse.Namespace) -> None:
     """Show diff between local and repo without applying changes."""
     repo = get_repo_root()
     sync_dir = repo / SYNC_DIR
+    syncignore = load_syncignore(repo)
     direction = args.direction
 
     if direction == "push":
         print(f"Diff: local (~/.claude) → repo ({sync_dir})\n")
-        changes = build_changes(CLAUDE_HOME, sync_dir)
+        changes = build_changes(CLAUDE_HOME, sync_dir, syncignore)
     else:
         print(f"Diff: repo ({sync_dir}) → local (~/.claude)\n")
-        changes = build_changes(sync_dir, CLAUDE_HOME)
+        changes = build_changes(sync_dir, CLAUDE_HOME, syncignore)
 
     if not changes:
         print("✓ No differences found.")
@@ -229,10 +259,13 @@ def cmd_status(_args: argparse.Namespace) -> None:
     """Show sync status overview."""
     repo = get_repo_root()
     sync_dir = repo / SYNC_DIR
+    syncignore = load_syncignore(repo)
     print(f"Repo: {sync_dir}")
     print(f"Local: {CLAUDE_HOME}\n")
 
     for name, local_path in SYNC_TARGETS.items():
+        if is_syncignored(name, syncignore):
+            continue
         repo_path = sync_dir / name
         local_exists = local_path.exists()
         repo_exists = repo_path.exists()
