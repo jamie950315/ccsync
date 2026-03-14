@@ -16,12 +16,15 @@ ccsync tracks two items from `~/.claude/` and stores them in the `config/` direc
 ### 1. [Fork this repo](https://github.com/jamie950315/ccsync/fork) on GitHub
 
 ```bash
-# 2. Clone your fork and push your local config
+# 2. Clone your fork and clear the existing config
 git clone https://github.com/<your-username>/ccsync.git
 cd ccsync
+rm -rf config/*
+
+# 3. Push your own local config
 python ccsync.py push
 
-# 3. On another device, clone your fork and pull the config down
+# 4. On another device, clone your fork and pull the config down
 git clone https://github.com/<your-username>/ccsync.git
 cd ccsync
 python ccsync.py pull
