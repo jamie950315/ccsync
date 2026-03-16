@@ -228,6 +228,11 @@ skills/ccsearch/*
 CLAUDE.md
 ```
 
+## Limitations
+
+- **No conflict detection**: If the same file is modified on two devices, the last `push` wins. There is no merge or warning. For personal use this is usually fine — just make sure to `pull` before editing on a new device.
+- **Text files only**: Binary files are skipped during sync.
+
 ## Requirements
 
 - Python 3.10+
