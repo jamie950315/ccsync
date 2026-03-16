@@ -14,7 +14,7 @@ SYNC_TARGETS = {
     "CLAUDE.md": CLAUDE_HOME / "CLAUDE.md",
     "skills": CLAUDE_HOME / "skills",
 }
-IGNORE_PATTERNS = {".DS_Store", "__pycache__", ".pyc"}
+IGNORE_PATTERNS = {".DS_Store", "__pycache__"}
 
 
 def get_repo_root() -> Path:
@@ -50,12 +50,22 @@ def should_ignore(path: Path) -> bool:
     return any(part in IGNORE_PATTERNS or part.endswith(".pyc") for part in path.parts)
 
 
+def is_text_file(path: Path) -> bool:
+    """Check if a file is likely a text file by reading a small chunk."""
+    try:
+        with open(path, "rb") as f:
+            chunk = f.read(8192)
+        return b"\x00" not in chunk
+    except (FileNotFoundError, IsADirectoryError, PermissionError):
+        return False
+
+
 def collect_files(base: Path, rel: Path = Path(".")) -> list[Path]:
-    """Recursively collect relative file paths under base, excluding ignored patterns."""
+    """Recursively collect relative file paths under base, excluding ignored and binary files."""
     result = []
     full = base / rel
     if full.is_file():
-        if not should_ignore(rel):
+        if not should_ignore(rel) and is_text_file(full):
             result.append(rel)
     elif full.is_dir():
         for child in sorted(full.iterdir()):
@@ -280,8 +290,8 @@ def cmd_status(_args: argparse.Namespace) -> None:
                 rc = read_text_safe(repo_path)
                 status = "in sync" if lc == rc else "differs"
             else:
-                lf = set(collect_files(local_path))
-                rf = set(collect_files(repo_path))
+                lf = {f for f in collect_files(local_path) if not is_syncignored(f"{name}/{f}", syncignore)}
+                rf = {f for f in collect_files(repo_path) if not is_syncignored(f"{name}/{f}", syncignore)}
                 only_local = lf - rf
                 only_repo = rf - lf
                 common = lf & rf
