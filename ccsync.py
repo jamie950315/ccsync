@@ -14,7 +14,7 @@ SYNC_TARGETS = {
     "CLAUDE.md": CLAUDE_HOME / "CLAUDE.md",
     "skills": CLAUDE_HOME / "skills",
 }
-IGNORE_PATTERNS = {".DS_Store", "__pycache__"}
+IGNORE_PATTERNS = {".DS_Store", "__pycache__", ".git", ".gitignore"}
 
 
 def get_repo_root() -> Path:
