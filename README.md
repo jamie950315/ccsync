@@ -228,6 +228,16 @@ skills/ccsearch/*
 CLAUDE.md
 ```
 
+## Claude Code Skill
+
+A ready-to-use skill is included at `skills/SKILL.md`. To install it, copy it to your Claude Code skills directory:
+
+```bash
+cp skills/SKILL.md ~/.claude/skills/ccsync/SKILL.md
+```
+
+Then you can use `/ccsync push`, `/ccsync pull`, etc. directly in Claude Code.
+
 ## Limitations
 
 - **No conflict detection**: If the same file is modified on two devices, the last `push` wins. There is no merge or warning. For personal use this is usually fine — just make sure to `pull` before editing on a new device.
