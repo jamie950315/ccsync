@@ -1,34 +1,31 @@
-# CLAUDE.md
+# Project guidance
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Project Overview
-
-**ccsync** is a single-file Python CLI tool that synchronizes `~/.claude/CLAUDE.md` and `~/.claude/skills/` between devices using a git repo as the transport layer. It compares files bidirectionally (local ↔ repo), shows unified diffs, and applies changes interactively.
-
-## Running
-
-```bash
-# Run directly
-python ccsync.py push|pull|diff|status
-
-# Commands
-python ccsync.py push [-y] [-m "msg"]   # Local → repo, then git commit & push
-python ccsync.py pull [-y] [--no-fetch]  # Repo → local ~/.claude
-python ccsync.py diff [push|pull]        # Preview changes without applying
-python ccsync.py status                  # Show sync status overview
-```
-
-No dependencies beyond the Python standard library. No build step, no tests, no package config.
+ccsync synchronizes Claude Code configuration through the existing GitHub
+repository's git-crypt-protected `config/` directory. Keep personal host names,
+paths, profiles and content out of public code and documentation.
 
 ## Architecture
 
-Single module (`ccsync.py`, ~300 lines). Key flow:
+- `ccsync.py`: CLI, Git transport, encryption checks, locking, state and optional
+  plugin installation. Commands: push, pull, diff, status; `--repo` selects a checkout.
+- `portable.py`: allowlisted capture, recursive Markdown imports, versioned
+  snapshot validation, per-host rendering, managed-file planning and backed-up
+  application. No network calls.
+- `config/snapshot.json`: encrypted source metadata, profiles, hashes and modes;
+  existing `config/CLAUDE.md` and `config/skills/` paths remain valid.
+- `~/.claude/settings.host.json`: local-only overrides. Never capture credentials,
+  runtime state, env values or pluginConfigs; preserve local values on pull.
+- `~/.local/state/ccsync/`: ownership hashes and backups. Named destination
+  profiles cannot push rendered output back over source configuration.
 
-- `SYNC_DIR = "config"` — synced files are stored under `config/` in the repo (not the repo root) to avoid conflicts with the project's own `CLAUDE.md`. This directory is encrypted with git-crypt (see `.gitattributes`)
-- `SYNC_TARGETS` dict defines what to sync: `CLAUDE.md` (file) and `skills/` (directory)
-- `build_changes(src, dst)` compares source → destination, returns list of change dicts with unified diffs
-- `apply_changes()` iterates changes, shows diffs with ANSI colors, prompts for confirmation (unless `-y`)
-- `git_operations()` stages, commits, and pushes after a `push` command
-- `collect_files()` recursively walks directories, filtering via `IGNORE_PATTERNS`
-- `.ccsyncignore` in repo root — glob patterns to exclude specific files/skills from syncing (e.g. `skills/ccsearch/*`)
+## Development and verification
+
+Python 3.10+ standard library; macOS/Linux. Run `python3 -m unittest -q`.
+Git encryption integration tests require git-crypt and use local temporary repos.
+Never run push/pull against real user configuration as a test. Do not change
+existing schedulers or deploy devices unless explicitly requested.
+
+Preserve unrelated Git changes. Only stage exact generated config paths inside
+the CLI. Fail closed on missing encryption, invalid imports, unsafe symlinks,
+corrupt manifests or local edits to managed files. Files removed by sync must
+be previously managed and backed up. Never add plaintext personal data to Git.

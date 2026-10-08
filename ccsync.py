@@ -1,344 +1,247 @@
 #!/usr/bin/env python3
-"""ccsync - Sync ~/.claude/CLAUDE.md and ~/.claude/skills/ between devices via git repo."""
+"""Sync portable Claude configuration through an encrypted Git repository."""
+from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import difflib
-import fnmatch
-import shutil
-import subprocess
+import json
+import platform
 from pathlib import Path
+import subprocess
+import sys
 
-CLAUDE_HOME = Path.home() / ".claude"
-SYNC_DIR = "config"
-SYNC_TARGETS = {
-    "CLAUDE.md": CLAUDE_HOME / "CLAUDE.md",
-    "skills": CLAUDE_HOME / "skills",
-}
-IGNORE_PATTERNS = {".DS_Store", "__pycache__", ".git", ".gitignore"}
+import portable as p
 
 
-def get_repo_root() -> Path:
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True, check=True,
-    )
-    return Path(result.stdout.strip())
+def git(repo, *args, check=True):
+    return subprocess.run(['git', '-C', str(repo), *args], check=check, capture_output=True)
 
 
-def load_syncignore(repo: Path) -> list[str]:
-    """Load ignore patterns from .ccsyncignore in repo root."""
-    ignorefile = repo / ".ccsyncignore"
-    if not ignorefile.exists():
-        return []
-    patterns = []
-    for line in ignorefile.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            patterns.append(line)
-    return patterns
+def syncignore(repo):
+    path = repo / '.ccsyncignore'
+    return [s.strip() for s in path.read_text().splitlines() if s.strip() and not s.startswith('#')] if path.exists() else []
 
 
-def is_syncignored(name: str, patterns: list[str]) -> bool:
-    """Check if a sync target name matches any .ccsyncignore pattern."""
-    for pattern in patterns:
-        if fnmatch.fnmatch(name, pattern):
-            return True
-    return False
+@contextmanager
+def lock(repo):
+    # flock is released by the OS even when a process crashes (macOS/Linux).
+    import fcntl
+    directory = Path(git(repo, 'rev-parse', '--absolute-git-dir').stdout.decode().strip())
+    with (directory / 'ccsync.lock').open('a') as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('Another ccsync operation is running') from None
+        yield
 
 
-def should_ignore(path: Path) -> bool:
-    return any(part in IGNORE_PATTERNS or part.endswith(".pyc") for part in path.parts)
+def encrypted(repo, names):
+    for name in names:
+        path = 'config/' + name
+        attr = git(repo, 'check-attr', 'filter', '--', path).stdout.decode().strip()
+        if not attr.endswith(': git-crypt'):
+            raise ValueError(f'Missing git-crypt protection: {path}')
+    clean = git(repo, 'config', '--get', 'filter.git-crypt.clean', check=False)
+    if clean.returncode or not clean.stdout.strip():
+        raise ValueError('git-crypt is not unlocked/configured in this checkout')
 
 
-def is_text_file(path: Path) -> bool:
-    """Check if a file is likely a text file by reading a small chunk."""
-    try:
-        with open(path, "rb") as f:
-            chunk = f.read(8192)
-        return b"\x00" not in chunk
-    except (FileNotFoundError, IsADirectoryError, PermissionError):
-        return False
+def publish(repo, names, message):
+    """Only stage exact generated paths; always retry pending commits on push."""
+    if git(repo, 'diff', '--cached', '--name-only').stdout.strip():
+        raise ValueError('Existing staged changes; commit or unstage them before pushing config')
+    if names:
+        encrypted(repo, names)
+        git(repo, 'add', '--', *['config/' + n for n in names])
+        try:
+            for name in names:
+                blob = git(repo, 'show', ':config/' + name, check=False)
+                if blob.returncode == 0 and not blob.stdout.startswith(b'\x00GITCRYPT\x00'):
+                    raise ValueError(f'Encryption did not produce ciphertext: config/{name}')
+        except BaseException:
+            git(repo, 'reset', '-q', 'HEAD', '--', *['config/' + n for n in names])
+            raise
+        if git(repo, 'diff', '--cached', '--quiet', check=False).returncode:
+            try:
+                git(repo, 'commit', '-m', message)
+            except BaseException:
+                git(repo, 'reset', '-q', 'HEAD', '--', *['config/' + n for n in names])
+                raise
+    git(repo, 'push')
 
 
-def collect_files(base: Path, rel: Path = Path(".")) -> list[Path]:
-    """Recursively collect relative file paths under base, excluding ignored and binary files."""
-    result = []
-    full = base / rel
-    if full.is_file():
-        if not should_ignore(rel) and is_text_file(full):
-            result.append(rel)
-    elif full.is_dir():
-        for child in sorted(full.iterdir()):
-            result.extend(collect_files(base, rel / child.name))
-    return result
-
-
-def read_text_safe(path: Path) -> str | None:
-    try:
-        return path.read_text(encoding="utf-8")
-    except (FileNotFoundError, IsADirectoryError):
-        return None
-    except UnicodeDecodeError:
-        return None
-
-
-def show_diff(label: str, old: str | None, new: str | None) -> list[str]:
-    old_lines = (old or "").splitlines(keepends=True)
-    new_lines = (new or "").splitlines(keepends=True)
-    return list(difflib.unified_diff(old_lines, new_lines, fromfile=f"a/{label}", tofile=f"b/{label}"))
-
-
-def print_diff(diff_lines: list[str]) -> None:
-    for line in diff_lines:
-        if line.startswith("+++") or line.startswith("---"):
-            print(f"\033[1m{line}\033[0m", end="")
-        elif line.startswith("+"):
-            print(f"\033[32m{line}\033[0m", end="")
-        elif line.startswith("-"):
-            print(f"\033[31m{line}\033[0m", end="")
-        elif line.startswith("@@"):
-            print(f"\033[36m{line}\033[0m", end="")
-        else:
-            print(line, end="")
-
-
-def confirm(prompt: str) -> bool:
-    answer = input(f"{prompt} [y/N] ").strip().lower()
-    return answer in ("y", "yes")
-
-
-def build_changes(src_base: Path, dst_base: Path, syncignore: list[str] | None = None) -> list[dict]:
-    """Compare source to destination and return a list of file changes."""
-    patterns = syncignore or []
-    changes = []
-    for name in SYNC_TARGETS:
-        if is_syncignored(name, patterns):
-            continue
-        src, dst = src_base / name, dst_base / name
-        if src.is_file():
-            sc, dc = read_text_safe(src), read_text_safe(dst)
-            if sc is not None and sc != dc:
-                action = "update" if dst.exists() else "create"
-                changes.append({"name": name, "src": src, "dst": dst, "action": action,
-                                "diff": show_diff(name, dc, sc), "is_dir": False})
-        elif src.is_dir():
-            src_files = collect_files(src)
-            dst_files = collect_files(dst) if dst.exists() else []
-            for rel in sorted(set(src_files) | set(dst_files)):
-                sf, df = src / rel, dst / rel
-                label = f"{name}/{rel}"
-                if is_syncignored(label, patterns):
-                    continue
-                sc, dc = read_text_safe(sf), read_text_safe(df)
-                if sc is not None and dc is None:
-                    changes.append({"name": label, "src": sf, "dst": df, "action": "create",
-                                    "diff": show_diff(label, None, sc), "is_dir": False})
-                elif sc is None and dc is not None:
-                    changes.append({"name": label, "src": sf, "dst": df, "action": "delete",
-                                    "diff": show_diff(label, dc, None), "is_dir": False})
-                elif sc is not None and sc != dc:
-                    changes.append({"name": label, "src": sf, "dst": df, "action": "update",
-                                    "diff": show_diff(label, dc, sc), "is_dir": False})
-    return changes
-
-
-def apply_changes(changes: list[dict], interactive: bool = True) -> int:
-    applied = 0
-    for change in changes:
-        action = change["action"]
-        name = change["name"]
-
-        if change["diff"]:
-            print(f"\n{'=' * 60}")
-            print(f"  {action.upper()}: {name}")
-            print(f"{'=' * 60}")
-            print_diff(change["diff"])
-
-        if action == "delete":
-            print(f"\n  DELETE: {name}")
-            if change["is_dir"]:
-                print(f"  (entire directory: {change['dst']})")
-
-        if interactive:
-            if not confirm(f"Apply {action} to {change['dst']}?"):
-                print(f"  Skipped: {name}")
-                continue
-
-        dst = change["dst"]
-        if action in ("create", "update"):
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(change["src"], dst)
-            print(f"  ✓ {action}: {name}")
-            applied += 1
-        elif action == "delete":
-            if change["is_dir"]:
-                shutil.rmtree(dst)
+def preview(changes, show_diff=False):
+    for name, before, after in changes:
+        action = 'delete' if after is None else ('create' if before is None else 'update')
+        print(f'{action}: {name}')
+        # Default output never prints configuration values into unattended logs.
+        if show_diff:
+            if name == 'settings.json':
+                def redact(data):
+                    if data is None:
+                        return None
+                    value = json.loads(data)
+                    for key in ('env', 'pluginConfigs'):
+                        if key in value:
+                            value[key] = '[host-local values hidden]'
+                    return p.encoded(value)
+                before, after = redact(before), redact(after)
+            try:
+                old = (before or b'').decode().splitlines(keepends=True)
+                new = (after or b'').decode().splitlines(keepends=True)
+            except UnicodeDecodeError:
+                print('  Binary content changed')
             else:
-                dst.unlink(missing_ok=True)
-            print(f"  ✓ deleted: {name}")
-            applied += 1
-
-    return applied
+                print(''.join(difflib.unified_diff(old, new, fromfile='a/' + name, tofile='b/' + name)), end='')
+    print(f'{len(changes)} file change(s)')
 
 
-def git_operations(repo: Path, message: str) -> None:
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    result = subprocess.run(
-        ["git", "diff", "--cached", "--quiet"],
-        cwd=repo, capture_output=True,
-    )
-    if result.returncode == 0:
-        print("No staged changes to commit.")
-        return
-    subprocess.run(["git", "commit", "-m", message], cwd=repo, check=True)
-    print("\nPushing to remote...")
-    subprocess.run(["git", "push"], cwd=repo, check=True)
-    print("✓ Pushed successfully.")
-
-
-def cmd_push(args: argparse.Namespace) -> None:
-    """Push local ~/.claude config to repo."""
-    repo = get_repo_root()
-    sync_dir = repo / SYNC_DIR
-    sync_dir.mkdir(parents=True, exist_ok=True)
-    syncignore = load_syncignore(repo)
-    print(f"Comparing local (~/.claude) → repo ({sync_dir})")
-
-    changes = build_changes(CLAUDE_HOME, sync_dir, syncignore)
-    if not changes:
-        print("✓ Everything is in sync. No changes needed.")
-        return
-
-    print(f"\nFound {len(changes)} change(s):\n")
-    applied = apply_changes(changes, interactive=not args.yes)
-
-    if applied > 0:
-        msg = args.message or "sync: update claude config"
-        git_operations(repo, msg)
-    else:
-        print("\nNo changes applied.")
-
-
-def cmd_pull(args: argparse.Namespace) -> None:
-    """Pull repo config to local ~/.claude."""
-    repo = get_repo_root()
-    sync_dir = repo / SYNC_DIR
-    syncignore = load_syncignore(repo)
-
-    if not args.no_fetch:
-        print("Fetching latest from remote...")
-        subprocess.run(["git", "pull", "--ff-only"], cwd=repo, check=True)
-
-    print(f"Comparing repo ({sync_dir}) → local (~/.claude)")
-
-    changes = build_changes(sync_dir, CLAUDE_HOME, syncignore)
-    if not changes:
-        print("✓ Everything is in sync. No changes needed.")
-        return
-
-    print(f"\nFound {len(changes)} change(s):\n")
-    applied = apply_changes(changes, interactive=not args.yes)
-    print(f"\n✓ Applied {applied} change(s) to ~/.claude")
-
-
-def cmd_diff(args: argparse.Namespace) -> None:
-    """Show diff between local and repo without applying changes."""
-    repo = get_repo_root()
-    sync_dir = repo / SYNC_DIR
-    syncignore = load_syncignore(repo)
-    direction = args.direction
-
-    if direction == "push":
-        print(f"Diff: local (~/.claude) → repo ({sync_dir})\n")
-        changes = build_changes(CLAUDE_HOME, sync_dir, syncignore)
-    else:
-        print(f"Diff: repo ({sync_dir}) → local (~/.claude)\n")
-        changes = build_changes(sync_dir, CLAUDE_HOME, syncignore)
-
-    if not changes:
-        print("✓ No differences found.")
-        return
-
-    for change in changes:
-        if change["diff"]:
-            print_diff(change["diff"])
-            print()
-
-
-def cmd_status(_args: argparse.Namespace) -> None:
-    """Show sync status overview."""
-    repo = get_repo_root()
-    sync_dir = repo / SYNC_DIR
-    syncignore = load_syncignore(repo)
-    print(f"Repo: {sync_dir}")
-    print(f"Local: {CLAUDE_HOME}\n")
-
-    for name, local_path in SYNC_TARGETS.items():
-        if is_syncignored(name, syncignore):
+def plugins(home):
+    """Reconcile declared enabled plugins. Explicit opt-in; failure is nonzero."""
+    c = home / '.claude'
+    settings = json.loads((c / 'settings.json').read_text())
+    installed = c / 'plugins/installed_plugins.json'
+    have = set(json.loads(installed.read_text()).get('plugins', {})) if installed.exists() else set()
+    known = c / 'plugins/known_marketplaces.json'
+    markets = set(json.loads(known.read_text())) if known.exists() else set()
+    for plugin, enabled in settings.get('enabledPlugins', {}).items():
+        if not enabled or plugin in have:
             continue
-        repo_path = sync_dir / name
-        local_exists = local_path.exists()
-        repo_exists = repo_path.exists()
+        market = plugin.rsplit('@', 1)[-1]
+        if market not in markets:
+            source = settings.get('extraKnownMarketplaces', {}).get(market, {}).get('source', {})
+            if source.get('source') != 'github' or not source.get('repo'):
+                raise ValueError(f'Missing GitHub marketplace definition: {market}')
+            subprocess.run(['claude', 'plugin', 'marketplace', 'add', source['repo']], check=True, capture_output=True)
+            markets.add(market)
+        subprocess.run(['claude', 'plugin', 'install', plugin], check=True, capture_output=True)
 
-        print(f"  {name}:")
-        print(f"    local: {'✓' if local_exists else '✗'} {local_path}")
-        print(f"    repo:  {'✓' if repo_exists else '✗'} {repo_path}")
 
-        if local_exists and repo_exists:
-            if local_path.is_file():
-                lc = read_text_safe(local_path)
-                rc = read_text_safe(repo_path)
-                status = "in sync" if lc == rc else "differs"
-            else:
-                lf = {f for f in collect_files(local_path) if not is_syncignored(f"{name}/{f}", syncignore)}
-                rf = {f for f in collect_files(repo_path) if not is_syncignored(f"{name}/{f}", syncignore)}
-                only_local = lf - rf
-                only_repo = rf - lf
-                common = lf & rf
-                diffs = sum(1 for f in common if read_text_safe(local_path / f) != read_text_safe(repo_path / f))
-                parts = []
-                if only_local:
-                    parts.append(f"{len(only_local)} local only")
-                if only_repo:
-                    parts.append(f"{len(only_repo)} repo only")
-                if diffs:
-                    parts.append(f"{diffs} differ")
-                status = ", ".join(parts) if parts else "in sync"
-            print(f"    status: {status}")
-        elif local_exists:
-            print("    status: local only (not in repo)")
-        elif repo_exists:
-            print("    status: repo only (not on local)")
+def run(args):
+    repo = Path(args.repo).resolve() if args.repo else Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel']).decode().strip())
+    home = Path.home()
+    root = repo / 'config'
+    state_root = home / '.local/state/ccsync'
+    state_path = p.checked(state_root, 'state.json')
+    local_state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    command = args.command
+    if command != 'push' and getattr(args, 'profile', None) is None:
+        args.profile = local_state.get('profile')
+    direction = args.direction if command in ('diff', 'status') else command
+    if direction is None:
+        direction = 'pull' if local_state.get('profile') else 'push'
+    with lock(repo):
+        if command == 'pull' and not args.no_fetch:
+            if git(repo, 'status', '--porcelain', '--', 'config').stdout.strip():
+                raise ValueError('Dirty config/; refusing to fetch and apply')
+            code = {n: (repo / n).read_bytes() for n in ('ccsync.py', 'portable.py') if (repo / n).exists()}
+            git(repo, 'pull', '--ff-only')
+            if any(not (repo / n).exists() or (repo / n).read_bytes() != b for n, b in code.items()):
+                raise ValueError('Sync code updated; rerun the command to load the new version')
+        if direction == 'push':
+            existing = p.checked(root, p.MANIFEST)
+            meta, _ = p.read_snapshot(root) if existing.exists() else ({}, {})
+            if not existing.exists() and (root / 'CLAUDE.md').exists():
+                p.read_snapshot(root)  # Reject locked legacy data before capture.
+            if state_path.exists() and json.loads(state_path.read_text()).get('profile'):
+                raise ValueError('A rendered destination cannot push the source snapshot')
+            profile_path = getattr(args, 'profiles', None)
+            profiles = p.load_profiles(Path(profile_path)) if profile_path else meta.get('profiles', {})
+            files = p.capture(home, syncignore(repo), profiles)
+            # Only remove files owned by the previous snapshot, never legacy or unrelated files.
+            old = {n: info['sha256'] for n, info in meta.get('files', {}).items()}
+            if existing.exists():
+                old[p.MANIFEST] = p.digest(existing.read_bytes())
+            modes = {n: 0o600 for n in files}
+            changes = p.plan(root, files, old, modes)
         else:
-            print("    status: missing")
-        print()
+            meta, source = p.read_snapshot(root)
+            selected = getattr(args, 'profile', None)
+            if command == 'pull' and meta.get('source_home') == str(home) and meta.get('source_platform') == platform.system():
+                raise ValueError('Refusing pull onto the source home: keep its original instruction imports intact')
+            selected_profile = meta.get('profiles', {}).get(selected, {})
+            if command == 'pull' and selected_profile.get('platform', platform.system()) != platform.system():
+                raise ValueError('Destination profile platform does not match this machine')
+            files = p.render(meta, source, home, getattr(args, 'profile', None))
+            files = {n: b for n, b in files.items() if not p.excluded(n, syncignore(repo))}
+            state = json.loads(state_path.read_text()) if state_path.exists() else {}
+            if state and state.get('repo') != str(repo):
+                raise ValueError('This Claude home is managed by another ccsync checkout')
+            if state.get('profile') is not None and state.get('profile') != selected:
+                raise ValueError('Destination profile changed; reconcile the previous managed state first')
+            profile = meta.get('profiles', {}).get(getattr(args, 'profile', None), {})
+            protected = not profile.get('sync_statusline', True)
+            old = {n: h for n, h in state.get('files', {}).items()
+                   if not p.excluded(n, syncignore(repo)) and not (protected and n == 'statusline-command.sh')}
+            modes = {n: info['mode'] for n, info in meta.get('files', {}).items()}
+            if not meta:
+                modes = {n: (0o700 if p.checked(root, n).stat().st_mode & 0o111 else 0o600) for n in files}
+            changes = p.plan(home / '.claude', files, old, modes,
+                             overwrite=command in ('diff', 'status') or getattr(args, 'overwrite_local', False))
+        preview(changes, command == 'diff')
+        if command in ('diff', 'status'):
+            return
+        if any(after is None for _, _, after in changes) and not getattr(args, 'allow_delete', False):
+            raise ValueError('Managed deletions require --allow-delete after reviewing the diff')
+        if not args.yes and input(f'Apply {command} and contact Git remote? [y/N] ').lower() != 'y':
+            return
+        if command == 'push':
+            if git(repo, 'diff', '--cached', '--name-only').stdout.strip():
+                raise ValueError('Existing staged changes; refusing to modify the snapshot')
+            encrypted(repo, files)
+            backup = p.apply(root, changes, modes, state_root / 'backups')
+            names = {n for n, _, _ in changes}
+            # Recover failures between writing the snapshot and committing it.
+            for n in files:
+                tracked = git(repo, 'ls-files', '--error-unmatch', '--', 'config/' + n, check=False)
+                dirty = git(repo, 'diff', '--quiet', 'HEAD', '--', 'config/' + n, check=False)
+                if tracked.returncode or dirty.returncode:
+                    names.add(n)
+            publish(repo, sorted(names), args.message or 'sync: update claude config')
+        else:
+            backup = p.apply(home / '.claude', changes, modes, state_root / 'backups')
+            p.atomic(state_path, p.encoded(dict(repo=str(repo), profile=args.profile,
+                     revision=git(repo, 'rev-parse', 'HEAD').stdout.decode().strip(),
+                     files={n: p.digest(b) for n, b in files.items()})))
+            if args.install_plugins:
+                plugins(home)
+        if backup:
+            print(f'Backup: {backup}')
+        print('Sync completed')
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        prog="ccsync",
-        description="Sync ~/.claude/CLAUDE.md and ~/.claude/skills/ between devices via git repo.",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--repo', help='Repository checkout (default: current Git root)')
+    sub = parser.add_subparsers(dest='command', required=True)
+    for name in ('push', 'pull', 'diff', 'status'):
+        cmd = sub.add_parser(name)
+        if name in ('push', 'pull'):
+            cmd.add_argument('-y', '--yes', action='store_true')
+            cmd.add_argument('--allow-delete', action='store_true', help='Allow reviewed, backed-up managed deletions')
+        if name == 'push':
+            cmd.add_argument('-m', '--message')
+            cmd.add_argument('--profiles', help='Import existing sync hosts.json and sibling hosts/*.LOCAL.md')
+        else:
+            cmd.add_argument('--profile', help='Named destination profile from the encrypted snapshot')
+        if name == 'pull':
+            cmd.add_argument('--no-fetch', action='store_true')
+            cmd.add_argument('--overwrite-local', action='store_true', help='Back up and replace locally edited managed files; never delete edited files')
+            cmd.add_argument('--install-plugins', action='store_true', help='Install missing enabled plugins after applying')
+        if name in ('diff', 'status'):
+            cmd.add_argument('direction', nargs='?', choices=['push', 'pull'])
+    try:
+        run(parser.parse_args())
+    except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+        # Do not echo subprocess output: plugins and Git filters can contain secrets.
+        if isinstance(exc, subprocess.CalledProcessError):
+            print(f'Operation failed: {exc.cmd[0]} exited {exc.returncode}; sync incomplete', file=sys.stderr)
+        else:
+            print(f'Error: {exc}', file=sys.stderr)
+        return 1
+    return 0
 
-    p_push = sub.add_parser("push", help="Push local config to repo and git push")
-    p_push.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompts")
-    p_push.add_argument("-m", "--message", help="Custom commit message")
 
-    p_pull = sub.add_parser("pull", help="Pull repo config to local ~/.claude")
-    p_pull.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompts")
-    p_pull.add_argument("--no-fetch", action="store_true", help="Skip git pull before syncing")
-
-    p_diff = sub.add_parser("diff", help="Show diff without applying changes")
-    p_diff.add_argument("direction", nargs="?", default="push", choices=["push", "pull"],
-                        help="Direction to diff (default: push)")
-
-    sub.add_parser("status", help="Show sync status overview")
-
-    args = parser.parse_args()
-    cmds = {"push": cmd_push, "pull": cmd_pull, "diff": cmd_diff, "status": cmd_status}
-    cmds[args.command](args)
-
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    sys.exit(main())

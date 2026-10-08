@@ -1,249 +1,182 @@
 # ccsync
 
-Sync your `~/.claude/CLAUDE.md` and `~/.claude/skills/` between devices using a git repo.
+Host your Claude Code configuration in this GitHub repository's encrypted
+`config/` directory, then pull it onto other devices. Git is the transport;
+devices do not need a direct SSH connection to the source computer.
 
-## What It Syncs
+Requires Python 3.10+, Git and git-crypt on macOS/Linux. Personal content remains
+under the existing `config/** filter=git-crypt diff=git-crypt` rule. There is no
+second configuration repository or hosted service.
 
-ccsync tracks two items from `~/.claude/` and stores them in the `config/` directory of the repo:
+## Workflow
 
-| Local Path | Repo Path | Description |
-|------------|-----------|-------------|
-| `~/.claude/CLAUDE.md` | `config/CLAUDE.md` | Your global Claude Code instructions |
-| `~/.claude/skills/` | `config/skills/` | Custom slash-command skills (e.g. `/ccsearch`) |
-
-The `config/` directory is encrypted with [git-crypt](https://github.com/AGWA/git-crypt), so your personal config stays private even in a public repo. Others who fork will see encrypted content and can simply replace it with their own.
-
-## Quick Start
-
-### 1. [Fork this repo](https://github.com/jamie950315/ccsync/fork) on GitHub
-
-```bash
-# 2. Clone your fork and clear the encrypted config
-git clone https://github.com/<your-username>/ccsync.git
-cd ccsync
-rm -rf config/*
-
-# 3. (Optional) Set up git-crypt to encrypt your own config
-brew install git-crypt   # or apt-get install git-crypt
-git-crypt init
-
-# 4. Push your own local config
-python ccsync.py push
-
-# 5. On another device, clone your fork and pull the config down
-git clone https://github.com/<your-username>/ccsync.git
-cd ccsync
-git-crypt unlock /path/to/your.key   # if using git-crypt
-python ccsync.py pull
+```text
+Source ~/.claude + referenced instruction files
+  -> ccsync push -> encrypted config/ -> GitHub
+  -> ccsync pull --profile <name> -> local ~/.claude
 ```
+
+`push` captures a portable source snapshot. `pull` renders it for the destination
+before comparing or writing any files. A source computer can be offline after
+pushing; destinations fetch the already-published snapshot independently.
 
 ## Commands
 
-### `push` — Local → Repo → Remote
-
-Copies your local `~/.claude` config into the repo's `config/` directory, then commits and pushes to remote.
+Run from your checkout, or pass `--repo /path/to/checkout` before the command:
 
 ```bash
-python ccsync.py push                    # Interactive mode (confirm each file)
-python ccsync.py push -y                 # Auto-accept all changes
-python ccsync.py push -m "add new skill" # Custom commit message (default: "sync: update claude config")
-python ccsync.py push -y -m "update"     # Auto-accept with custom message
+python3 ccsync.py status
+python3 ccsync.py diff push
+python3 ccsync.py push -y -m "sync: update configuration"
+python3 ccsync.py diff pull --profile linux-host
+python3 ccsync.py pull --profile linux-host -y
+python3 ccsync.py pull --profile linux-host -y --install-plugins
 ```
 
-Example output:
+- `push`: capture, back up replaced repo files, commit exact snapshot paths, push.
+- `pull`: `git pull --ff-only`, render, back up, apply and record managed hashes.
+- `diff [push|pull]`: preview actual rendered differences without applying them.
+- `status [push|pull]`: filename-only change summary (defaults to pull on a
+  previously configured destination, push otherwise). `diff` uses the same default.
+- `pull --no-fetch`: apply the existing checkout without contacting the remote.
+- `--allow-delete`: permit deletions of previously managed files after reviewing
+  the diff. `-y` alone never authorizes deletion.
+- `pull --overwrite-local`: back up and replace locally edited managed files.
+  It does not permit deletion of locally edited files.
+- `pull --install-plugins`: explicitly install missing enabled plugins. Failures
+  return nonzero; the configuration remains applied and the next run retries
+  missing installations. Plugin updates and language-server installation are
+  not performed.
 
-```
-Comparing local (~/.claude) → repo (/Users/you/ccsync/config)
+Without `-y`, configuration application requires confirmation. Pull fetches
+before displaying the preview. Normal sync output lists filenames, not values.
+`diff` prints content: use it only in a trusted terminal. Environment and plugin
+configuration values in settings diffs are hidden.
 
-Found 2 change(s):
+## Snapshot contents
 
-============================================================
-  UPDATE: CLAUDE.md
-============================================================
---- a/CLAUDE.md
-+++ b/CLAUDE.md
-@@ -1,3 +1,5 @@
-+@RTK.md
-+
- ### AI Assistant Guidelines
-...
+| Source | Snapshot / destination |
+|---|---|
+| `~/.claude/CLAUDE.md` | `CLAUDE.md` |
+| Standalone `@file` Markdown imports inside `~/.claude` or `~/.codex` | Collected recursively, relative imports, flat filenames |
+| `~/.claude/settings.json` | Settings, excluding `env` and `pluginConfigs` |
+| `~/.claude/hooks/`, `skills/` | Files, including binary assets and executable bits |
+| `~/.claude/statusline-command.sh` | Statusline script unless the profile preserves its own |
 
-Apply update to /Users/you/ccsync/config/CLAUDE.md? [y/N] y
-  ✓ update: CLAUDE.md
+Snapshots include a versioned `snapshot.json` containing file hashes, modes,
+source home/platform and destination profiles. Source instruction files outside
+the allowed roots, missing imports, filename collisions and import cycles fail
+closed. Only standalone `@path` import lines are relocated; remaining absolute
+inline imports abort capture. Prose and skill instructions are not blindly rewritten.
 
-============================================================
-  CREATE: skills/ccsearch/SKILL.md
-============================================================
---- a/skills/ccsearch/SKILL.md
-+++ b/skills/ccsearch/SKILL.md
-@@ -0,0 +1,10 @@
-+---
-+name: ccsearch
-+...
+Credentials, session history, caches, runtime plugin files, `settings.local.json`
+and `settings.host.json` are not collected. Hidden files/directories,
+`node_modules`, Python caches and credential-like filenames (`*.env`, `*.key`,
+`*.pem`, `credentials*`) are excluded from hooks/skills. Known private-key and
+token signatures also abort capture. This is defense in depth, not proof that
+arbitrary text contains no secrets; review the snapshot before publishing.
 
-Apply create to /Users/you/ccsync/config/skills/ccsearch/SKILL.md? [y/N] y
-  ✓ create: skills/ccsearch/SKILL.md
+`env` and `pluginConfigs` stay on each device: existing local values survive a
+pull, and `~/.claude/settings.host.json` overrides the rendered settings using a
+recursive dictionary merge. Arrays are replaced. API keys and git-crypt keys
+must never be added to the repository.
 
-Pushing to remote...
-✓ Pushed successfully.
-```
+## Destination profiles
 
-### `pull` — Remote → Repo → Local
-
-Fetches from remote, then applies repo config to your local `~/.claude`.
+Import profiles once from an existing `claude-config-sync` directory:
 
 ```bash
-python ccsync.py pull                    # Fetch + interactive apply
-python ccsync.py pull -y                 # Fetch + auto-accept all
-python ccsync.py pull --no-fetch         # Skip git pull, just apply from local repo
-python ccsync.py pull -y --no-fetch      # Skip fetch + auto-accept
+python3 ccsync.py push --profiles /path/to/claude-config-sync/hosts.json
 ```
 
-Example output:
+The importer reads `hosts`, global `skip_skills` / `skip_plugins`, and sibling
+`hosts/<name>.LOCAL.md` files. It stores profiles inside the encrypted snapshot;
+it does not retain SSH addresses or fixed destination home paths. Subsequent
+pushes preserve these profiles unless `--profiles` is supplied again.
 
-```
-Fetching latest from remote...
-Already up to date.
-Comparing repo (/Users/you/ccsync/config) → local (~/.claude)
+Supported per-host fields are `name`, `codex_memory`, `sync_statusline`,
+`web_search_section`, and `web_search_note`. Imported profiles target Linux.
+For example:
 
-Found 1 change(s):
-
-============================================================
-  UPDATE: CLAUDE.md
-============================================================
---- a/CLAUDE.md
-+++ b/CLAUDE.md
-@@ -5,3 +5,5 @@
- ### AI Assistant Guidelines
-+
-+**Web Search:** Always use `/ccsearch` for web searches.
-
-Apply update to /Users/you/.claude/CLAUDE.md? [y/N] y
-  ✓ update: CLAUDE.md
-
-✓ Applied 1 change(s) to ~/.claude
+```json
+{
+  "skip_skills": ["mac-only-tool"],
+  "skip_plugins": ["swift-lsp@claude-plugins-official"],
+  "hosts": [{"name": "linux-host", "sync_statusline": false}]
+}
 ```
 
-### `diff` — Preview Changes
+Provide `hosts/linux-host.LOCAL.md` with destination-specific instructions.
+The first pull records the selected profile; later pulls and previews reuse it
+unless explicitly supplied. Switching an already-managed profile is refused.
+Cross-platform pulls require an explicit profile; unknown profiles fail.
+Actual pulls reject a profile for a different OS. Pulling onto the original
+source home/platform is refused, preserving its original Codex instruction
+references; this workflow uses that home as the publisher, not a destination.
+On Linux, settings commands referencing Mac-only paths and local marketplaces
+are excluded; remaining source-home paths in settings are relocated to the
+actual destination home. Profile-specific search and memory instruction
+sections use the same headings as the prior sync tool.
 
-Shows what would change without applying anything. Useful for reviewing before a push or pull.
+This is not an arbitrary shell-script porting engine. Hook/script bodies and
+skill prose are copied as files; audit their platform assumptions before enabling
+them on another OS. A destination that has applied a named profile cannot push
+its lossy rendered copy back over the source snapshot.
+
+## Git and file safety
+
+- Push requires git-crypt protection and checks staged bytes are ciphertext
+  before committing. A locked checkout cannot be pulled as plaintext.
+- Existing staged changes block push. Only exact generated paths are staged;
+  unrelated source edits and untracked files are not included.
+- A failed push is retried even if the source has not changed. A failed commit
+  unstages this operation's files, leaving them available for the next push.
+- Pull refuses a dirty `config/` before fetching. Diverged Git history is not
+  force-pushed or automatically resolved.
+- If fetching changes the sync program, pull stops and asks for a rerun, instead
+  of applying the new snapshot with old code still loaded.
+- A process lock prevents overlapping operations in one checkout.
+- Only previously managed, unmodified files can be removed. Destination-only
+  files survive. Local modifications to managed files stop the operation for
+  reconciliation rather than silently overwriting them. To replace them after
+  previewing, use `--overwrite-local`; replaced content is backed up.
+- Source symlinks are materialized, with cycle detection. Destination symlinks
+  are refused, including symlinked parent directories.
+- All planned changes are backed up under `~/.local/state/ccsync/backups/`.
+  `restore.json` identifies newly created files and original modes. Completed
+  writes are rolled back if another file write fails. This is not a full
+  crash-consistent filesystem transaction; keep backups until verified.
+
+State lives in `~/.local/state/ccsync/state.json`. One destination Claude home
+is managed by one checkout. Do not run the old SSH writer and ccsync pull against
+the same home concurrently: both manage the same files.
+
+## Existing repositories and migration
+
+Legacy `config/CLAUDE.md` and `config/skills/` snapshots remain readable. Their
+contents are not cross-platform transformed without a new snapshot. The first
+new push adds a manifest and captures the expanded allowlist; unrelated legacy
+files remain in Git but are not deployed by the manifest reader.
+
+1. Update the program with plain `git pull` first, **not the old `ccsync pull`**.
+2. Unlock the checkout with your existing git-crypt key (never store it here).
+3. On the source, preview and push a new snapshot, importing profiles if needed.
+4. On a destination, preview `diff pull --profile <name>` and inspect exclusions.
+5. Back up and stop any previous writer before the first actual pull.
+6. Verify the destination, then change your scheduler to the new command.
+
+The tool does not install or modify schedulers. A six-hour schedule can invoke
+`push -y` on the source and `pull -y --profile <name> --install-plugins` on each
+destination. Device setup and encryption-key provisioning are separate steps.
+
+## Development
 
 ```bash
-python ccsync.py diff                    # Preview push direction (default)
-python ccsync.py diff push               # Same as above
-python ccsync.py diff pull               # Preview pull direction
+python3 -m unittest -q
 ```
 
-Example output:
+Tests use temporary homes, local bare Git remotes and real git-crypt encryption
+(encryption integration tests skip when git-crypt is unavailable). They do not
+contact GitHub or modify real Claude settings.
 
-```
-Diff: local (~/.claude) → repo (/Users/you/ccsync/config)
-
---- a/CLAUDE.md
-+++ b/CLAUDE.md
-@@ -1,3 +1,5 @@
-+@RTK.md
-+
- ### AI Assistant Guidelines
-
---- a/skills/ccsearch/SKILL.md
-+++ b/skills/ccsearch/SKILL.md
-@@ -0,0 +1,5 @@
-+---
-+name: ccsearch
-+description: "Web search using ccsearch CLI."
-+---
-```
-
-### `status` — Sync Overview
-
-Shows whether each tracked item exists locally and in the repo, and whether they differ.
-
-```bash
-python ccsync.py status
-```
-
-Example output:
-
-```
-Repo: /Users/you/ccsync/config
-Local: /Users/you/.claude
-
-  CLAUDE.md:
-    local: ✓ /Users/you/.claude/CLAUDE.md
-    repo:  ✓ /Users/you/ccsync/config/CLAUDE.md
-    status: differs
-
-  skills:
-    local: ✓ /Users/you/.claude/skills
-    repo:  ✓ /Users/you/ccsync/config/skills
-    status: 1 local only, 2 differ
-```
-
-## Typical Workflows
-
-### Setting up a new device
-
-```bash
-git clone https://github.com/<your-username>/ccsync.git
-cd ccsync
-git-crypt unlock /path/to/your.key   # if using git-crypt
-python ccsync.py pull -y
-```
-
-### Daily sync across devices
-
-```bash
-# On device A: push changes
-cd ~/ccsync
-python ccsync.py push -y
-
-# On device B: pull changes
-cd ~/ccsync
-python ccsync.py pull -y
-```
-
-### Reviewing before syncing
-
-```bash
-# Check what's different
-python ccsync.py status
-
-# See the exact diff
-python ccsync.py diff push
-
-# If it looks good, push
-python ccsync.py push
-```
-
-## Ignoring Files
-
-Create a `.ccsyncignore` file in the repo root to exclude items from syncing. Uses glob patterns, one per line:
-
-```
-# Don't sync the ccsearch skill
-skills/ccsearch/*
-
-# Don't sync CLAUDE.md
-CLAUDE.md
-```
-
-## Claude Code Skill
-
-A ready-to-use skill is included at `skills/SKILL.md`. To install it, copy it to your Claude Code skills directory:
-
-```bash
-cp skills/SKILL.md ~/.claude/skills/ccsync/SKILL.md
-```
-
-Then you can use `/ccsync push`, `/ccsync pull`, etc. directly in Claude Code.
-
-## Limitations
-
-- **No conflict detection**: If the same file is modified on two devices, the last `push` wins. There is no merge or warning. For personal use this is usually fine — just make sure to `pull` before editing on a new device.
-- **Text files only**: Binary files are skipped during sync.
-
-## Requirements
-
-- Python 3.10+
-- [git-crypt](https://github.com/AGWA/git-crypt) (optional, for encrypting `config/`)
+The optional Claude skill is in `skills/SKILL.md`. License: MIT.
